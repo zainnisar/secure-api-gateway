@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+audit.log
+key.pem
+cert.pem
+zap/

@@ -1,0 +1,58 @@
+name: Security pipeline
+
+on: [push, pull_request]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get the code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install bandit pip-audit
+
+      - name: Create test-only secrets
+        run: |
+          echo "GATEWAY_SECRET_KEY=$(python -c 'import secrets; print(secrets.token_hex(32))')" >> $GITHUB_ENV
+          echo "ADMIN_OTP_SECRET=$(python -c 'import pyotp; print(pyotp.random_base32())')" >> $GITHUB_ENV
+          echo "ALI_OTP_SECRET=$(python -c 'import pyotp; print(pyotp.random_base32())')" >> $GITHUB_ENV
+
+      - name: SAST - Bandit
+        run: bandit gateway.py backend.py
+
+      - name: Dependency scan - pip-audit
+        run: pip-audit -r requirements.txt
+
+      - name: Start backend and gateway
+        run: |
+          uvicorn backend:app --host 127.0.0.1 --port 9000 &
+          uvicorn gateway:app --host 127.0.0.1 --port 8000 > gateway_console.log 2>&1 &
+          sleep 5
+
+      - name: Attack tests
+        run: python test_security.py
+
+      - name: DAST - OWASP ZAP baseline scan
+        run: |
+          mkdir -p zap && chmod 777 zap
+          docker run --rm --network host -v "$PWD/zap:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:8000/students -r zap_report.html -I
+
+      - name: Save reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            zap/zap_report.html
+            audit.log
+            gateway_console.log
